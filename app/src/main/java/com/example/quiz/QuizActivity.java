@@ -1,22 +1,26 @@
 package com.example.quiz;
 
-import android.annotation.SuppressLint;
+import android.content.Intent;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
-import android.widget.ImageButton;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 
-@SuppressLint("SetTextI18n")
+import java.util.Locale;
+
 public class QuizActivity extends AppCompatActivity {
 	private static final String TAG = "QuizActivity";
-	private static final String KEY_INDEX = "index";
-	private final Question[] mQuestions = new Question[]{
+	private static final String QUESTION_ID_INDEX = "questionID";
+	private static final String ANSWERED_INDEX = "answeredQuestions";
+	private static final String IS_CHEATER_INDEX = "isCheater";
+	private final Question[] mQuestions = {
 			new Question(R.string.question_australia),
 			new Question(R.string.question_oceans),
 			new Question(R.string.question_mideast, false),
@@ -27,12 +31,26 @@ public class QuizActivity extends AppCompatActivity {
 	// array index = question id, values: 0 - unanswered; 1 - answered correctly; 2 - answered incorrectly
 	private byte[] answeredQuestions = new byte[mQuestions.length];
 	private byte mQuestionId = 0;
+	private boolean isCheater;
 	private TextView mQuestionTextView;
 	private TextView mIndicatorTextView;
-	private ImageButton nextButton;
-	private ImageButton prevButton;
-	private Button mFalseButton;
-	private Button mTrueButton;
+	private Button mCheatButton;
+	// onActivityResult, startActivityForResult, requestPermissions, and onRequestPermissionsResult are deprecated. https://stackoverflow.com/q/62671106
+	// There are no request codes
+	ActivityResultLauncher<Intent> cheatActivityLauncher = registerForActivityResult(
+			new ActivityResultContracts.StartActivityForResult(),
+			result -> {
+				if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+					Intent data = result.getData();
+					answeredQuestions[mQuestionId] = 2;
+					isCheater = CheatActivity.wasAnswerShown(data);
+					mCheatButton.setVisibility(View.GONE);
+				}
+			});
+
+	private static String format(String s, Object... args) {
+		return String.format(Locale.ENGLISH, s, args);
+	}
 
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
@@ -40,51 +58,57 @@ public class QuizActivity extends AppCompatActivity {
 		Log.d(TAG, "onCreate(Bundle) called");
 		setContentView(R.layout.activity_main);
 
+		if (isAllAnswered()) {
+			showRetryActivity();
+			return;
+		}
+
 		mQuestionTextView = findViewById(R.id.question_text_view);
 		mIndicatorTextView = findViewById(R.id.question_indicator);
-		nextButton = findViewById(R.id.next_button);
-		prevButton = findViewById(R.id.prev_button);
-		mFalseButton = findViewById(R.id.false_button);
-		mTrueButton = findViewById(R.id.true_button);
+		mCheatButton = findViewById(R.id.cheat_button);
 
 		if (savedInstanceState != null) {
-			mQuestionId = savedInstanceState.getByte(KEY_INDEX);
-			answeredQuestions = savedInstanceState.getByteArray(KEY_INDEX);
+			mQuestionId = savedInstanceState.getByte(QUESTION_ID_INDEX);
+			answeredQuestions = savedInstanceState.getByteArray(ANSWERED_INDEX);
+			isCheater = savedInstanceState.getBoolean(IS_CHEATER_INDEX, false);
 		}
 
 		updateQuestionText();
-		mFalseButton.setOnClickListener(view -> showAnswer(!mQuestions[mQuestionId].isCorrectAnswer()));
-		mTrueButton.setOnClickListener(view -> showAnswer(mQuestions[mQuestionId].isCorrectAnswer()));
-		nextButton.setOnClickListener(view -> goNextOrPrevQuestion(true));
-		prevButton.setOnClickListener(view -> goNextOrPrevQuestion(false));
+
+		findViewById(R.id.next_button).setOnClickListener(v -> switchQuestion(true));
+		findViewById(R.id.prev_button).setOnClickListener(v -> switchQuestion(false));
+		findViewById(R.id.false_button).setOnClickListener(v -> showAnswer(!mQuestions[mQuestionId].isCorrectAnswer()));
+		findViewById(R.id.true_button).setOnClickListener(v -> showAnswer(mQuestions[mQuestionId].isCorrectAnswer()));
+
+		mCheatButton.setOnClickListener(v -> {
+			Intent intent = CheatActivity.newIntent(this, mQuestions[mQuestionId].isCorrectAnswer());
+			cheatActivityLauncher.launch(intent);
+		});
 	}
 
+
 	@Override
-	public void onSaveInstanceState(@NonNull Bundle outState) {
+	protected void onSaveInstanceState(@NonNull Bundle outState) {
 		super.onSaveInstanceState(outState);
 		Log.i(TAG, "onSaveInstanceState() called");
-		outState.putByte(KEY_INDEX, mQuestionId);
-		outState.putByteArray(KEY_INDEX, answeredQuestions);
+		outState.putByte(QUESTION_ID_INDEX, mQuestionId);
+		outState.putByteArray(ANSWERED_INDEX, answeredQuestions);
+		outState.putBoolean(IS_CHEATER_INDEX, isCheater);
 	}
 
 	private void showAnswer(boolean isAnswerCorrect) {
-		answeredQuestions[mQuestionId] = (byte) (isAnswerCorrect ? 1 : 2);
+		if (!isCheater) answeredQuestions[mQuestionId] = (byte) (isAnswerCorrect ? 1 : 2);
 
-		Toast toast = Toast.makeText(QuizActivity.this, isAnswerCorrect ? R.string.correct_toast : R.string.incorrect_toast, Toast.LENGTH_SHORT);
-		toast.show();
+		int messageResId = isCheater ? R.string.judgment_toast : isAnswerCorrect ? R.string.correct_toast : R.string.incorrect_toast;
+		Toast.makeText(QuizActivity.this, messageResId, Toast.LENGTH_SHORT)
+				.show();
 
-		goNextOrPrevQuestion(true);
+		switchQuestion(true);
 	}
 
-	private void goNextOrPrevQuestion(boolean nextOrBack) {
+	private void switchQuestion(boolean nextOrBack) {
 		if (isAllAnswered()) {
-			mFalseButton.setVisibility(View.GONE);
-			mTrueButton.setVisibility(View.GONE);
-			nextButton.setVisibility(View.GONE);
-			prevButton.setVisibility(View.GONE);
-			mIndicatorTextView.setVisibility(View.GONE);
-			int rightAnswers = getRightAnswersCount();
-			mQuestionTextView.setText("Right answers " + rightAnswers + " of " + mQuestions.length + " (" + rightAnswers * 100 / mQuestions.length + "%)");
+			showRetryActivity();
 			return;
 		}
 
@@ -95,19 +119,22 @@ public class QuizActivity extends AppCompatActivity {
 		updateQuestionText();
 	}
 
+	private void showRetryActivity() {
+		int rightAnswers = getRightAnswersCount();
+		String resultText = format("Right answers %d of %d (%d%%)", rightAnswers, mQuestions.length, rightAnswers * 100 / mQuestions.length);
+		Intent intent = ResultActivity.newIntent(this, resultText);
+		finish();
+		startActivity(getIntent());
+		startActivity(intent);
+		return;
+	}
+
 	private void updateQuestionText() {
-		if (answeredQuestions[mQuestionId] != 0) {
-			if (mFalseButton.getVisibility() == View.VISIBLE)
-				mFalseButton.setVisibility(View.INVISIBLE);
-			if (mTrueButton.getVisibility() == View.VISIBLE)
-				mTrueButton.setVisibility(View.INVISIBLE);
-		} else {
-			if (mFalseButton.getVisibility() == View.INVISIBLE)
-				mFalseButton.setVisibility(View.VISIBLE);
-			if (mTrueButton.getVisibility() == View.INVISIBLE)
-				mTrueButton.setVisibility(View.VISIBLE);
-		}
-		mIndicatorTextView.setText("Question №" + (mQuestionId + 1));
+		boolean isCurrentQuestionAnswered = answeredQuestions[mQuestionId] != 0;
+		mCheatButton.setVisibility(isCurrentQuestionAnswered ? View.GONE : View.VISIBLE);
+		isCheater = false;
+		findViewById(R.id.buttons_layout).setVisibility(isCurrentQuestionAnswered ? View.GONE : View.VISIBLE);
+		mIndicatorTextView.setText(format("Question №%d", mQuestionId + 1));
 		mQuestionTextView.setText(mQuestions[mQuestionId].getTextResID());
 	}
 
